@@ -687,17 +687,23 @@ module ts {
         function parseExpected(t: SyntaxKind, parent: Node, propertyName: string): boolean {
             if (token === t) {
                 if (parserHooks) {
-                    parserHooks.onParseExpected(t, parent, propertyName, /**/ false, scanner)
+                    parserHooks.onParseExpected(t, parent, propertyName, /*isMissing*/ false, scanner)
                 }
                 nextToken();
                 return true;
             }
             error(Diagnostics._0_expected, tokenToString(t));
+            if (parserHooks) {
+                parserHooks.onParseExpected(t, parent, propertyName, /*isMissing*/ true, scanner)
+            }
             return false;
         }
 
-        function parseOptional(t: SyntaxKind): boolean {
+        function parseOptional(t: SyntaxKind, parent: Node, propertyName: string): boolean {
             if (token === t) {
+                if (parserHooks) {
+                    parserHooks.onParseOptional(t, parent, propertyName, scanner)
+                }
                 nextToken();
                 return true;
             }
@@ -1040,11 +1046,15 @@ module ts {
         // The allowReservedWords parameter controls whether reserved words are permitted after the first dot
         function parseEntityName(allowReservedWords: boolean): EntityName {
             var entity: EntityName = parseIdentifier();
-            while (parseOptional(SyntaxKind.DotToken)) {
-                var node = <QualifiedName>createNode(SyntaxKind.QualifiedName, entity.pos);
+
+            var node = <QualifiedName>createNode(SyntaxKind.QualifiedName);
+            while (parseOptional(SyntaxKind.DotToken, node, "dotToken")) {
+                node.pos = entity.pos;
                 node.left = entity;
                 node.right = allowReservedWords ? parseIdentifierName() : parseIdentifier();
                 entity = finishNode(node);
+
+                var node = <QualifiedName>createNode(SyntaxKind.QualifiedName);
             }
             return entity;
         }
@@ -1110,7 +1120,7 @@ module ts {
         function parseTypeParameter(): TypeParameterDeclaration {
             var node = <TypeParameterDeclaration>createNode(SyntaxKind.TypeParameter);
             node.name = parseIdentifier();
-            if (parseOptional(SyntaxKind.ExtendsKeyword)) {
+            if (parseOptional(SyntaxKind.ExtendsKeyword, node, "extendsKeyword")) {
                 // It's not uncommon for people to write improper constraints to a generic.  If the 
                 // user writes a constraint that is an expression and not an actual type, then parse
                 // it out as an expression (so we can recover well), but report that a type is needed
@@ -1147,8 +1157,8 @@ module ts {
             }
         }
 
-        function parseParameterType(): TypeNode {
-            return parseOptional(SyntaxKind.ColonToken) ? token === SyntaxKind.StringLiteral ? parseStringLiteral() : parseType() : undefined;
+        function parseParameterType(parent: Node): TypeNode {
+            return parseOptional(SyntaxKind.ColonToken, parent, "colonToken") ? token === SyntaxKind.StringLiteral ? parseStringLiteral() : parseType() : undefined;
         }
 
         function isParameter(): boolean {
@@ -1158,7 +1168,7 @@ module ts {
         function parseParameter(flags: NodeFlags = 0): ParameterDeclaration {
             var node = <ParameterDeclaration>createNode(SyntaxKind.Parameter);
             node.flags |= parseAndCheckModifiers(ModifierContext.Parameters);
-            if (parseOptional(SyntaxKind.DotDotDotToken)) {
+            if (parseOptional(SyntaxKind.DotDotDotToken, node, "dotDotDotToken")) {
                 node.flags |= NodeFlags.Rest;
             }
             node.name = parseIdentifier();
@@ -1174,10 +1184,10 @@ module ts {
                 nextToken();
             }
 
-            if (parseOptional(SyntaxKind.QuestionToken)) {
+            if (parseOptional(SyntaxKind.QuestionToken, node, "questionToken")) {
                 node.flags |= NodeFlags.QuestionMark;
             }
-            node.type = parseParameterType();
+            node.type = parseParameterType(node);
             node.initializer = parseInitializer(node, /*inParameter*/ true);
 
             // Do not check for initializers in an ambient context for parameters. This is not
@@ -1191,14 +1201,14 @@ module ts {
             return finishNode(node);
         }
 
-        function parseSignature(kind: SyntaxKind, parent: Node, returnToken: SyntaxKind): ParsedSignature {
+        function parseSignature(kind: SyntaxKind, parent: Node, returnToken: SyntaxKind, returnTokenName: string): ParsedSignature {
             if (kind === SyntaxKind.ConstructSignature) {
                 parseExpected(SyntaxKind.NewKeyword, parent, "newKeyword");
             }
             var typeParameters = parseTypeParameters(parent);
             var parameters = parseParameterList(parent, SyntaxKind.OpenParenToken, "openParenToken", SyntaxKind.CloseParenToken, "closeParenToken");
             checkParameterList(parameters);
-            var type = parseOptional(returnToken) ? parseType() : undefined;
+            var type = parseOptional(returnToken, parent, returnTokenName) ? parseType() : undefined;
             return {
                 typeParameters: typeParameters,
                 parameters: parameters,
@@ -1260,9 +1270,9 @@ module ts {
             }
         }
 
-        function parseSignatureMember(kind: SyntaxKind, returnToken: SyntaxKind): SignatureDeclaration {
+        function parseSignatureMember(kind: SyntaxKind, returnToken: SyntaxKind, returnTokenName: string): SignatureDeclaration {
             var node = <SignatureDeclaration>createNode(kind);
-            var sig = parseSignature(kind, node, returnToken);
+            var sig = parseSignature(kind, node, returnToken, returnTokenName);
             node.typeParameters = sig.typeParameters;
             node.parameters = sig.parameters;
             node.type = sig.type;
@@ -1276,7 +1286,7 @@ module ts {
             var indexerStart = scanner.getTokenPos();
             node.parameters = parseParameterList(node, SyntaxKind.OpenBracketToken, "openBracketToken", SyntaxKind.CloseBracketToken, "closeBracketToken");
             var indexerLength = scanner.getStartPos() - indexerStart;
-            node.type = parseTypeAnnotation();
+            node.type = parseTypeAnnotation(node);
             parseSemicolon();
             if (file.syntacticErrors.length === errorCountBeforeIndexSignature) {
                 checkIndexSignature(node, indexerStart, indexerLength);
@@ -1330,19 +1340,19 @@ module ts {
         function parsePropertyOrMethod(): Declaration {
             var node = <Declaration>createNode(SyntaxKind.Unknown);
             node.name = parsePropertyName();
-            if (parseOptional(SyntaxKind.QuestionToken)) {
+            if (parseOptional(SyntaxKind.QuestionToken, node, "questionToken")) {
                 node.flags |= NodeFlags.QuestionMark;
             }
             if (token === SyntaxKind.OpenParenToken || token === SyntaxKind.LessThanToken) {
                 node.kind = SyntaxKind.Method;
-                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
                 (<MethodDeclaration>node).typeParameters = sig.typeParameters;
                 (<MethodDeclaration>node).parameters = sig.parameters;
                 (<MethodDeclaration>node).type = sig.type;
             }
             else {
                 node.kind = SyntaxKind.Property;
-                (<PropertyDeclaration>node).type = parseTypeAnnotation();
+                (<PropertyDeclaration>node).type = parseTypeAnnotation(node);
             }
             parseSemicolon();
             return finishNode(node);
@@ -1364,12 +1374,12 @@ module ts {
             switch (token) {
                 case SyntaxKind.OpenParenToken:
                 case SyntaxKind.LessThanToken:
-                    return parseSignatureMember(SyntaxKind.CallSignature, SyntaxKind.ColonToken);
+                    return parseSignatureMember(SyntaxKind.CallSignature, SyntaxKind.ColonToken, "colonToken");
                 case SyntaxKind.OpenBracketToken:
                     return parseIndexSignatureMember();
                 case SyntaxKind.NewKeyword:
                     if (lookAhead(() => nextToken() === SyntaxKind.OpenParenToken || token === SyntaxKind.LessThanToken)) {
-                        return parseSignatureMember(SyntaxKind.ConstructSignature, SyntaxKind.ColonToken);
+                        return parseSignatureMember(SyntaxKind.ConstructSignature, SyntaxKind.ColonToken, "colonToken");
                     }
                 case SyntaxKind.StringLiteral:
                 case SyntaxKind.NumericLiteral:
@@ -1396,7 +1406,7 @@ module ts {
         function parseFunctionType(signatureKind: SyntaxKind): TypeLiteralNode {
             var node = <TypeLiteralNode>createNode(SyntaxKind.TypeLiteral);
             var member = <SignatureDeclaration>createNode(signatureKind);
-            var sig = parseSignature(signatureKind, member, SyntaxKind.EqualsGreaterThanToken);
+            var sig = parseSignature(signatureKind, member, SyntaxKind.EqualsGreaterThanToken, "equalsGreaterThanToken");
             member.typeParameters = sig.typeParameters;
             member.parameters = sig.parameters;
             member.type = sig.type;
@@ -1463,17 +1473,19 @@ module ts {
 
         function parseType(): TypeNode {
             var type = parseNonArrayType();
-            while (type && !scanner.hasPrecedingLineBreak() && parseOptional(SyntaxKind.OpenBracketToken)) {
-                var node = <ArrayTypeNode>createNode(SyntaxKind.ArrayType, type.pos);
+            var node = <ArrayTypeNode>createNode(SyntaxKind.ArrayType, type.pos);
+            while (type && !scanner.hasPrecedingLineBreak() && parseOptional(SyntaxKind.OpenBracketToken, node, "openBracketToken")) {
                 parseExpected(SyntaxKind.CloseBracketToken, node, "closeBracketToken");
                 node.elementType = type;
                 type = finishNode(node);
+
+                node = <ArrayTypeNode>createNode(SyntaxKind.ArrayType, type.pos);
             }
             return type;
         }
 
-        function parseTypeAnnotation(): TypeNode {
-            return parseOptional(SyntaxKind.ColonToken) ? parseType() : undefined;
+        function parseTypeAnnotation(parent: Node): TypeNode {
+            return parseOptional(SyntaxKind.ColonToken, parent, "colonToken") ? parseType() : undefined;
         }
 
         // EXPRESSIONS
@@ -1652,7 +1664,7 @@ module ts {
 
             var node = <FunctionExpression>createNode(SyntaxKind.ArrowFunction);
             if (triState === Tristate.True) {
-                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
 
                 // If we have an arrow, then try to parse the body.
                 // Even if not, try to parse if we have an opening brace, just in case we're in an error state.
@@ -1755,7 +1767,7 @@ module ts {
 
         function tryParseSignatureIfArrowOrBraceFollows(parent: Node): ParsedSignature {
             return tryParse(() => {
-                var sig = parseSignature(SyntaxKind.CallSignature, parent, SyntaxKind.ColonToken);
+                var sig = parseSignature(SyntaxKind.CallSignature, parent, SyntaxKind.ColonToken, "colonToken");
 
                 // Parsing a signature isn't enough.
                 // Parenthesized arrow signatures often look like other valid expressions.
@@ -2094,7 +2106,7 @@ module ts {
             var node = <PropertyDeclaration>createNode(SyntaxKind.PropertyAssignment);
             node.name = parsePropertyName();
             if (token === SyntaxKind.OpenParenToken || token === SyntaxKind.LessThanToken) {
-                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+                var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
                 var body = parseBody( /* ignoreMissingOpenBrace */ false);
                 // do not propagate property name as name for function expression
                 // for scenarios like 
@@ -2196,7 +2208,7 @@ module ts {
             var node = <FunctionExpression>createNode(SyntaxKind.FunctionExpression, pos);
             parseExpected(SyntaxKind.FunctionKeyword, node, "functionKeyword");
             var name = isIdentifier() ? parseIdentifier() : undefined;
-            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
             var body = parseBody(/* ignoreMissingOpenBrace */ false);
             if (name && isInStrictMode && isEvalOrArgumentsIdentifier(name)) {
                 // It is a SyntaxError to use within strict mode code the identifiers eval or arguments as the 
@@ -2278,7 +2290,7 @@ module ts {
             node.expression = parseExpression();
             parseExpected(SyntaxKind.CloseParenToken, node, "closeParenToken");
             node.thenStatement = parseStatement();
-            node.elseStatement = parseOptional(SyntaxKind.ElseKeyword) ? parseStatement() : undefined;
+            node.elseStatement = parseOptional(SyntaxKind.ElseKeyword, node, "elseKeyword") ? parseStatement() : undefined;
             return finishNode(node);
         }
 
@@ -2300,7 +2312,7 @@ module ts {
             // 157 min --- All allen at wirfs-brock.com CONF --- "do{;}while(false)false" prohibited in 
             // spec but allowed in consensus reality. Approved -- this is the de-facto standard whereby
             //  do;while(0)x will have a semicolon inserted before x.
-            parseOptional(SyntaxKind.SemicolonToken);
+            parseOptional(SyntaxKind.SemicolonToken, node, "semicolonToken");
             return finishNode(node);
         }
 
@@ -2325,7 +2337,7 @@ module ts {
             parseExpected(SyntaxKind.ForKeyword, node, "forKeyword");
             parseExpected(SyntaxKind.OpenParenToken, node, "openParenToken");
             if (token !== SyntaxKind.SemicolonToken) {
-                if (parseOptional(SyntaxKind.VarKeyword)) {
+                if (parseOptional(SyntaxKind.VarKeyword, node, "varKeyword")) {
                     var declarations = parseVariableDeclarationList(0, true);
                     if (!declarations.length) {
                         error(Diagnostics.Variable_declaration_list_cannot_be_empty);
@@ -2335,7 +2347,7 @@ module ts {
                     var varOrInit = parseExpression(true);
                 }
             }
-            if (parseOptional(SyntaxKind.InKeyword)) {
+            if (parseOptional(SyntaxKind.InKeyword, node, "inKeyword")) {
                 node.kind = SyntaxKind.ForInStatement;
                 if (declarations) {
                     if (declarations.length > 1) {
@@ -2580,7 +2592,7 @@ module ts {
             catchBlock.variable = parseIdentifier();
             var typeAnnotationColonStart = scanner.getTokenPos();
             var typeAnnotationColonLength = scanner.getTextPos() - typeAnnotationColonStart;
-            var typeAnnotation = parseTypeAnnotation();
+            var typeAnnotation = parseTypeAnnotation(catchBlock);
             parseExpected(SyntaxKind.CloseParenToken, catchBlock, "closeParenToken");
             var result = <CatchBlock>parseBlock(catchBlock, /* ignoreMissingOpenBrace */ false, /*checkForStrictMode*/ false);
 
@@ -2766,7 +2778,7 @@ module ts {
             node.flags = flags;
             var errorCountBeforeVariableDeclaration = file.syntacticErrors.length;
             node.name = parseIdentifier();
-            node.type = parseTypeAnnotation();
+            node.type = parseTypeAnnotation(node);
 
             // Issue any initializer-related errors on the equals token
             var initializerStart = scanner.getTokenPos();
@@ -2806,7 +2818,7 @@ module ts {
             if (flags) node.flags = flags;
             parseExpected(SyntaxKind.FunctionKeyword, node, "functionKeyword");
             node.name = parseIdentifier();
-            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
             node.typeParameters = sig.typeParameters;
             node.parameters = sig.parameters;
             node.type = sig.type;
@@ -2823,7 +2835,7 @@ module ts {
             var node = <ConstructorDeclaration>createNode(SyntaxKind.Constructor, pos);
             node.flags = flags;
             parseExpected(SyntaxKind.ConstructorKeyword, node, "constructorKeyword");
-            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
             node.typeParameters = sig.typeParameters;
             node.parameters = sig.parameters;
             node.type = sig.type;
@@ -2850,7 +2862,7 @@ module ts {
                 var method = <MethodDeclaration>createNode(SyntaxKind.Method, pos);
                 method.flags = flags;
                 method.name = name;
-                var sig = parseSignature(SyntaxKind.CallSignature, method, SyntaxKind.ColonToken);
+                var sig = parseSignature(SyntaxKind.CallSignature, method, SyntaxKind.ColonToken, "colonToken");
                 method.typeParameters = sig.typeParameters;
                 method.parameters = sig.parameters;
                 method.type = sig.type;
@@ -2861,7 +2873,7 @@ module ts {
                 var property = <PropertyDeclaration>createNode(SyntaxKind.Property, pos);
                 property.flags = flags;
                 property.name = name;
-                property.type = parseTypeAnnotation();
+                property.type = parseTypeAnnotation(property);
 
                 var initializerStart = scanner.getTokenPos();
                 var initializerFirstTokenLength = scanner.getTextPos() - initializerStart;
@@ -2923,7 +2935,7 @@ module ts {
             var node = <MethodDeclaration>createNode(kind, pos);
             node.flags = flags;
             node.name = parsePropertyName();
-            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken);
+            var sig = parseSignature(SyntaxKind.CallSignature, node, SyntaxKind.ColonToken, "colonToken");
             node.typeParameters = sig.typeParameters;
             node.parameters = sig.parameters;
             node.type = sig.type;
@@ -3158,10 +3170,10 @@ module ts {
             node.name = parseIdentifier();
             node.typeParameters = parseTypeParameters(node);
             // TODO(jfreeman): Parse arbitrary sequence of heritage clauses and error for order and duplicates
-            node.baseType = parseOptional(SyntaxKind.ExtendsKeyword) ? parseTypeReference() : undefined;
+            node.baseType = parseOptional(SyntaxKind.ExtendsKeyword, node, "extendsKeyword") ? parseTypeReference() : undefined;
             var implementsKeywordStart = scanner.getTokenPos();
             var implementsKeywordLength: number;
-            if (parseOptional(SyntaxKind.ImplementsKeyword)) {
+            if (parseOptional(SyntaxKind.ImplementsKeyword, node, "implementsKeyword")) {
                 implementsKeywordLength = scanner.getStartPos() - implementsKeywordStart;
                 node.implementedTypes = parseDelimitedList(ParsingContext.BaseTypeReferences, parseTypeReference, TrailingCommaBehavior.Disallow);
             }
@@ -3189,7 +3201,7 @@ module ts {
             // TODO(jfreeman): Parse arbitrary sequence of heritage clauses and error for order and duplicates
             var extendsKeywordStart = scanner.getTokenPos();
             var extendsKeywordLength: number;
-            if (parseOptional(SyntaxKind.ExtendsKeyword)) {
+            if (parseOptional(SyntaxKind.ExtendsKeyword, node, "extendsKeyword")) {
                 extendsKeywordLength = scanner.getStartPos() - extendsKeywordStart;
                 node.baseTypes = parseDelimitedList(ParsingContext.BaseTypeReferences, parseTypeReference, TrailingCommaBehavior.Disallow);
             }
