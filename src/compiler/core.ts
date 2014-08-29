@@ -568,6 +568,10 @@ module ts {
     function Signature(checker: TypeChecker) {
     }
 
+    export interface ParserHooks {
+        onParseExpected(kind: SyntaxKind, parent: Node, propertyName: string, isMissing: boolean, scanner: Scanner): void;
+    }
+
     export var objectAllocator: ObjectAllocator = {
         getNodeConstructor: kind => {
             function Node() {
@@ -585,6 +589,8 @@ module ts {
         getTypeConstructor: () => <any>Type,
         getSignatureConstructor: () => <any>Signature
     }
+
+    export var parserHooks: ParserHooks;
 
     export enum AssertionLevel {
         None = 0,
